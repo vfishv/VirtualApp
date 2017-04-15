@@ -8,7 +8,6 @@ import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -16,6 +15,7 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.content.pm.ServiceInfo;
+import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -32,13 +32,14 @@ import com.lody.virtual.client.core.VirtualCore;
 import com.lody.virtual.client.env.SpecialComponentList;
 import com.lody.virtual.client.ipc.ProviderCall;
 import com.lody.virtual.client.stub.StubManifest;
+import com.lody.virtual.helper.collection.ArrayMap;
+import com.lody.virtual.helper.collection.SparseArray;
 import com.lody.virtual.helper.compat.ActivityManagerCompat;
+import com.lody.virtual.helper.compat.ApplicationThreadCompat;
 import com.lody.virtual.helper.compat.BundleCompat;
 import com.lody.virtual.helper.compat.IApplicationThreadCompat;
 import com.lody.virtual.helper.utils.ComponentUtils;
 import com.lody.virtual.helper.utils.VLog;
-import com.lody.virtual.helper.collection.ArrayMap;
-import com.lody.virtual.helper.collection.SparseArray;
 import com.lody.virtual.os.VBinder;
 import com.lody.virtual.os.VUserHandle;
 import com.lody.virtual.remote.AppTaskInfo;
@@ -47,7 +48,7 @@ import com.lody.virtual.remote.PendingResultData;
 import com.lody.virtual.remote.VParceledListSlice;
 import com.lody.virtual.server.IActivityManager;
 import com.lody.virtual.server.interfaces.IProcessObserver;
-import com.lody.virtual.server.pm.PackageCache;
+import com.lody.virtual.server.pm.PackageCacheManager;
 import com.lody.virtual.server.pm.PackageSetting;
 import com.lody.virtual.server.pm.VAppManagerService;
 import com.lody.virtual.server.pm.VPackageManagerService;
@@ -57,8 +58,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.concurrent.atomic.AtomicReference;
-
-import mirror.android.app.ApplicationThreadNative;
 
 import static android.os.Process.killProcess;
 import static com.lody.virtual.os.VUserHandle.getUserId;
@@ -123,6 +122,32 @@ public class VActivityManagerService extends IActivityManager.Stub {
             return mMainStack.startActivityLocked(userId, intent, info, resultTo, options, resultWho, requestCode);
         }
     }
+
+    @Override
+    public int startActivities(Intent[] intents, String[] resolvedTypes, IBinder token, Bundle options, int userId) {
+        synchronized (this) {
+            ActivityInfo[] infos = new ActivityInfo[intents.length];
+            for (int i = 0; i < intents.length; i++) {
+                ActivityInfo ai = VirtualCore.get().resolveActivityInfo(intents[i], userId);
+                if (ai == null) {
+                    return ActivityManagerCompat.START_INTENT_NOT_RESOLVED;
+                }
+                infos[i] = ai;
+
+            }
+            return mMainStack.startActivitiesLocked(userId, intents, infos, resolvedTypes, token, options);
+        }
+    }
+
+    @Override
+    public String getPackageForIntentSender(IBinder binder) {
+        PendingIntentData data = mPendingIntents.getPendingIntent(binder);
+        if (data != null) {
+            return data.creator;
+        }
+        return null;
+    }
+
 
     @Override
     public PendingIntentData getPendingIntent(IBinder binder) {
@@ -597,7 +622,7 @@ public class VActivityManagerService extends IActivityManager.Stub {
         }
         IInterface thread = null;
         try {
-            thread = ApplicationThreadNative.asInterface.call(client.getAppThread());
+            thread = ApplicationThreadCompat.asInterface(client.getAppThread());
         } catch (RemoteException e) {
             // process has dead
         }
@@ -664,16 +689,17 @@ public class VActivityManagerService extends IActivityManager.Stub {
             // run GC
             killAllApps();
         }
-        PackageSetting setting = PackageCache.getSetting(packageName);
+        PackageSetting ps = PackageCacheManager.getSetting(packageName);
         ApplicationInfo info = VPackageManagerService.get().getApplicationInfo(packageName, 0, userId);
-        if (setting == null || info == null) {
+        if (ps == null || info == null) {
             return null;
         }
-        if (!setting.isLaunched(userId)) {
-            setting.setLaunched(userId, true);
+        if (!ps.isLaunched(userId)) {
+            sendFirstLaunchBroadcast(ps, userId);
+            ps.setLaunched(userId, true);
             VAppManagerService.get().savePersistenceData();
         }
-        int uid = VUserHandle.getUid(userId, setting.appId);
+        int uid = VUserHandle.getUid(userId, ps.appId);
         ProcessRecord app = mProcessNames.get(processName, uid);
         if (app != null && app.client.asBinder().isBinderAlive()) {
             return app;
@@ -687,6 +713,14 @@ public class VActivityManagerService extends IActivityManager.Stub {
             app.pkgList.add(info.packageName);
         }
         return app;
+    }
+
+    private void sendFirstLaunchBroadcast(PackageSetting ps, int userId) {
+        Intent intent = new Intent(Intent.ACTION_PACKAGE_FIRST_LAUNCH, Uri.fromParts("package", ps.packageName, null));
+        intent.setPackage(ps.packageName);
+        intent.putExtra(Intent.EXTRA_UID, VUserHandle.getUid(ps.appId, userId));
+        intent.putExtra("android.intent.extra.user_handle", userId);
+        sendBroadcastAsUser(intent, null);
     }
 
 
@@ -912,27 +946,37 @@ public class VActivityManagerService extends IActivityManager.Stub {
                                            BroadcastReceiver resultReceiver, Handler scheduler, int initialCode,
                                            String initialData, Bundle initialExtras) {
         Context context = VirtualCore.get().getContext();
-        intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        if (user != null) {
+            intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        }
         // TODO: checkPermission
         context.sendOrderedBroadcast(intent, null/* permission */, resultReceiver, scheduler, initialCode, initialData,
                 initialExtras);
     }
 
     public void sendBroadcastAsUser(Intent intent, VUserHandle user) {
+        SpecialComponentList.protectIntent(intent);
         Context context = VirtualCore.get().getContext();
-        intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        if (user != null) {
+            intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        }
         context.sendBroadcast(intent);
     }
 
     public boolean bindServiceAsUser(Intent service, ServiceConnection connection, int flags, VUserHandle user) {
         service = new Intent(service);
-        service.putExtra("_VA_|_user_id_", user.getIdentifier());
+        if (user != null) {
+            service.putExtra("_VA_|_user_id_", user.getIdentifier());
+        }
         return VirtualCore.get().getContext().bindService(service, connection, flags);
     }
 
     public void sendBroadcastAsUser(Intent intent, VUserHandle user, String permission) {
+        SpecialComponentList.protectIntent(intent);
         Context context = VirtualCore.get().getContext();
-        intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        if (user != null) {
+            intent.putExtra("_VA_|_user_id_", user.getIdentifier());
+        }
         // TODO: checkPermission
         context.sendBroadcast(intent);
     }
@@ -998,11 +1042,5 @@ public class VActivityManagerService extends IActivityManager.Stub {
     @Override
     public void broadcastFinish(PendingResultData res) {
         BroadcastSystem.get().broadcastFinish(res);
-    }
-
-    @Override
-    public Intent dispatchStickyBroadcast(IntentFilter filter) {
-        int vuid = VBinder.getCallingUid();
-        return BroadcastSystem.get().dispatchStickyBroadcast(vuid, filter);
     }
 }

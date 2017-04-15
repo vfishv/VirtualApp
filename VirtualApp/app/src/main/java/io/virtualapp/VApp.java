@@ -3,6 +3,7 @@ package io.virtualapp;
 import android.app.Application;
 import android.content.Context;
 
+import com.flurry.android.FlurryAgent;
 import com.lody.virtual.client.core.VirtualCore;
 import com.lody.virtual.client.stub.StubManifest;
 
@@ -46,6 +47,12 @@ public class VApp extends Application {
             @Override
             public void onMainProcess() {
                 Once.initialise(VApp.this);
+                new FlurryAgent.Builder()
+                        .withLogEnabled(true)
+                        .withListener(() -> {
+                            // nothing
+                        })
+                        .build(VApp.this, "48RJJP7ZCZZBB6KMMWW5");
             }
 
             @Override
@@ -60,7 +67,15 @@ public class VApp extends Application {
 
             @Override
             public void onServerProcess() {
-                VirtualCore.get().setAppRequestListener(new MyAppRequestListener(VApp.this));
+                virtualCore.setAppRequestListener(new MyAppRequestListener(VApp.this));
+                virtualCore.addVisibleOutsidePackage("com.tencent.mobileqq");
+                virtualCore.addVisibleOutsidePackage("com.tencent.mobileqqi");
+                virtualCore.addVisibleOutsidePackage("com.tencent.minihd.qq");
+                virtualCore.addVisibleOutsidePackage("com.tencent.qqlite");
+                virtualCore.addVisibleOutsidePackage("com.facebook.katana");
+                virtualCore.addVisibleOutsidePackage("com.whatsapp");
+                virtualCore.addVisibleOutsidePackage("com.tencent.mm");
+                virtualCore.addVisibleOutsidePackage("com.immomo.momo");
             }
         });
     }

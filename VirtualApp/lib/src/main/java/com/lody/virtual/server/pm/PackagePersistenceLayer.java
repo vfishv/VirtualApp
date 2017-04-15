@@ -1,10 +1,10 @@
 package com.lody.virtual.server.pm;
 
-import android.content.pm.PackageParser;
 import android.os.Parcel;
 
 import com.lody.virtual.helper.PersistenceLayer;
 import com.lody.virtual.os.VEnvironment;
+import com.lody.virtual.server.pm.parser.VPackage;
 
 import java.util.Arrays;
 
@@ -15,7 +15,7 @@ import java.util.Arrays;
 class PackagePersistenceLayer extends PersistenceLayer {
 
     private static final char[] MAGIC = {'v', 'p', 'k', 'g'};
-    private static final int CURRENT_VERSION = 2;
+    private static final int CURRENT_VERSION = 3;
 
     private VAppManagerService mService;
 
@@ -43,11 +43,11 @@ class PackagePersistenceLayer extends PersistenceLayer {
 
     @Override
     public void writePersistenceData(Parcel p) {
-        synchronized (PackageCache.PACKAGE_CACHE) {
-            p.writeInt(PackageCache.PACKAGE_CACHE.size());
-            for (PackageParser.Package pkg : PackageCache.PACKAGE_CACHE.values()) {
-                PackageSetting setting = (PackageSetting) pkg.mExtras;
-                setting.writeToParcel(p, 0);
+        synchronized (PackageCacheManager.PACKAGE_CACHE) {
+            p.writeInt(PackageCacheManager.PACKAGE_CACHE.size());
+            for (VPackage pkg : PackageCacheManager.PACKAGE_CACHE.values()) {
+                PackageSetting ps = (PackageSetting) pkg.mExtras;
+                ps.writeToParcel(p, 0);
             }
         }
     }
@@ -63,6 +63,7 @@ class PackagePersistenceLayer extends PersistenceLayer {
 
     @Override
     public boolean onVersionConflict(int fileVersion, int currentVersion) {
+        // I am so lazy to process it...
         return false;
     }
 
